@@ -39,14 +39,13 @@ def safe_json(resp):
 def main():
     sckey = os.getenv("SENDKEY", "")
     cookies_env = os.getenv("COOKIES", "")
-    cookies = [c for c in cookies_env.split("&") if c]
+    cookies = [c.strip() for c in cookies_env.split("&") if c.strip()]
 
     if not cookies:
         push(sckey, "GLaDOS 签到", "❌ 未检测到 COOKIES")
         return
 
     session = requests.Session()
-
     ok = fail = repeat = 0
     lines = []
 
@@ -65,34 +64,34 @@ def main():
                 data=json.dumps(PAYLOAD),
                 timeout=TIMEOUT,
             )
+
             j = safe_json(r)
             msg = j.get("message", "")
+            msg_lower = msg.lower()
 
-            if "Checkin! Got" in msg:
+            if "got" in msg_lower:
                 ok += 1
                 points = j.get("points", "-")
                 status = "✅ 成功"
-            elif "Checkin Repeats" in msg:
+            elif "repeat" in msg_lower or "already" in msg_lower:
                 repeat += 1
                 status = "🔁 已签到"
             else:
                 fail += 1
                 status = "❌ 失败"
 
-            # 状态接口（失败不影响主流程）
+            # 状态接口（允许失败）
             s = session.get(STATUS_URL, headers=headers, timeout=TIMEOUT)
             sj = safe_json(s).get("data") or {}
             email = sj.get("email", email)
             if sj.get("leftDays") is not None:
                 days = f"{int(float(sj['leftDays']))} 天"
 
-        except Exception as e:
+        except Exception:
             fail += 1
-            status = f"❌ 异常"
+            status = "❌ 异常"
 
         lines.append(f"{idx}. {email} | {status} | P:{points} | 剩余:{days}")
-
-        # 防风控：轻微随机延迟
         time.sleep(random.uniform(1, 2))
 
     title = f"GLaDOS 签到完成 ✅{ok} ❌{fail} 🔁{repeat}"
