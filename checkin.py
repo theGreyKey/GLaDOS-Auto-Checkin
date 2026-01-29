@@ -122,8 +122,18 @@ def main():
 
         lines.append(f"{idx}. {email} | {status} | P:{points} | Total:{total_points} | 剩余:{days}")
         time.sleep(random.uniform(1, 2))
-
-    title = f"GLaDOS 签到完成 ✅{ok} ❌{fail} 🔁{repeat}"
+        
+    if fail > 0:
+        title = "GLaDOS ⚠️ 签到异常 - 请检查 Cookie"
+    elif ok > 0:
+        if len(cookies) == 1 and points != "-":
+             title = f"GLaDOS ✅ 签到成功 (+{points} Point)"
+        else:
+             title = f"GLaDOS ✅ 成功签到 {ok} 个账号"
+    elif repeat > 0:
+        title = "GLaDOS 👋 今日已签 (无变化)"
+    else:
+        title = "GLaDOS 签到通知"
     content = "\n".join(lines)
 
     print(content)
