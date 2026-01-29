@@ -1,4 +1,4 @@
-name: GLaDOS Auto Checkin
+name: Checkin
 
 on:
   workflow_dispatch:
