@@ -3,7 +3,8 @@ name: Checkin
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 16 * * *'
+    - cron: '30 1 * * *'
+    - cron: '30 13 * * *'
 
 jobs:
   checkin:
