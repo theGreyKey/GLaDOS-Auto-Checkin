@@ -24,9 +24,25 @@ PAYLOAD = {"token": "glados.cloud"}
 TIMEOUT = 10
 
 
-def push(sckey: str, title: str, text: str):
-    if sckey:
-        PushDeer(pushkey=sckey).send_text(title, desp=text)
+def push(token: str, title: str, text: str):
+    if not token:
+        return
+    url = 'http://www.pushplus.plus/send'
+    content_body = text.replace("\n", "<br>")
+    data = {
+        "token": token,
+        "title": title,
+        "content": content_body,
+        "template": "markdown",
+    }
+    try:
+        resp = requests.post(
+            url, 
+            json=data, 
+            headers={'content-type': 'application/json'}
+        )
+    except Exception as e:
+        print(f"PushPlus 推送失败: {e}")
 
 
 def safe_json(resp):
