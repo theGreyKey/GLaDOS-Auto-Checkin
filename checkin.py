@@ -72,7 +72,8 @@ def main():
         email = "unknown"
         points = "-"
         days = "-"
-
+        total_points = " "
+        
         try:
             r = session.post(
                 CHECKIN_URL,
