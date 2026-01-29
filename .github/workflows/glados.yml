@@ -3,7 +3,7 @@ name: GLaDOS Auto Checkin
 on:
   workflow_dispatch:
   schedule:
-    - cron: '16 16 * * *'
+    - cron: '30 16 * * *'
 
 jobs:
   checkin:
@@ -11,23 +11,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Calculate random delay
-        id: delay
-        run: |
-          # 生成 0 到 18000 秒（0-5小时）
-          RANDOM_DELAY=$(( RANDOM % 18000 ))
-          echo "delay=$RANDOM_DELAY" >> $GITHUB_OUTPUT
           
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.8'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pypushdeer
 
       - name: Run checkin
         run: python checkin.py
