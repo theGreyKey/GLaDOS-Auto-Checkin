@@ -66,6 +66,9 @@ def main():
             )
 
             j = safe_json(r)
+            print(f"--- 签到接口返回 (Raw Data) ---")
+            print(json.dumps(j, indent=4, ensure_ascii=False))
+            print("--------------------------------")
             msg = j.get("message", "")
             msg_lower = msg.lower()
 
