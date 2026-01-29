@@ -82,7 +82,16 @@ def main():
             else:
                 fail += 1
                 status = "❌ 失败"
-
+                
+            try:
+                checkin_list = j.get("list", [])
+                if checkin_list and isinstance(checkin_list, list) and len(checkin_list) > 0:
+                    balance_str = checkin_list[0].get("balance")
+                    if balance_str:
+                        total_points = int(float(balance_str))
+            except Exception:
+                pass
+                
             # 状态接口（允许失败）
             s = session.get(STATUS_URL, headers=headers, timeout=TIMEOUT)
             sj = safe_json(s).get("data") or {}
@@ -94,7 +103,7 @@ def main():
             fail += 1
             status = "❌ 异常"
 
-        lines.append(f"{idx}. {email} | {status} | P:{points} | 剩余:{days}")
+        lines.append(f"{idx}. {email} | {status} | P:{points} | Total:{total_points} | 剩余:{days}")
         time.sleep(random.uniform(1, 2))
 
     title = f"GLaDOS 签到完成 ✅{ok} ❌{fail} 🔁{repeat}"
