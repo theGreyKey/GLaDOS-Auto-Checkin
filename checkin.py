@@ -13,9 +13,49 @@ import hmac
 import base64
 import urllib.parse
 import logging
+from html import escape
+from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Callable
 from functools import wraps
 import requests
+
+
+# ==================== 本地环境加载 ====================
+def load_local_env() -> Optional[Path]:
+    """加载本地环境文件；已有环境变量优先，兼容 GitHub Actions Secrets。
+
+    本地可在脚本同目录创建 `.checkin.env`，格式为 KEY=VALUE。
+    也可通过 CHECKIN_ENV_FILE 指定其他路径。文件不会被提交到仓库。
+    """
+    configured = os.getenv("CHECKIN_ENV_FILE", "").strip()
+    candidates = [Path(configured)] if configured else []
+    candidates.extend((Path(__file__).resolve().parent / ".checkin.env", Path.cwd() / ".checkin.env"))
+
+    env_path = next((path for path in candidates if path.is_file()), None)
+    if env_path is None:
+        return None
+
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            key, separator, value = line.partition("=")
+            key = key.strip()
+            if not separator or not key or not key.replace("_", "").isalnum():
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+        logger.info("已加载本地环境文件: %s", env_path)
+        return env_path
+    except OSError as exc:
+        logger.warning("读取本地环境文件失败: %s", exc)
+        return None
+
 
 # ==================== 日志配置 ====================
 logging.basicConfig(
@@ -25,14 +65,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("GLaDOS")
 
+load_local_env()
+
 # ==================== 配置 ====================
-CHECKIN_URL = "https://glados.cloud/api/user/checkin"
-STATUS_URL = "https://glados.cloud/api/user/status"
-POINTS_URL = "https://glados.cloud/api/user/points"
-EXCHANGE_URL = "https://glados.cloud/api/user/exchange"
+API_ORIGIN = "https://glados.rocks"
+CHECKIN_URL = f"{API_ORIGIN}/api/user/checkin"
+STATUS_URL = f"{API_ORIGIN}/api/user/status"
+POINTS_URL = f"{API_ORIGIN}/api/user/points"
+EXCHANGE_URL = f"{API_ORIGIN}/api/user/exchange"
 HEADERS_BASE = {
-    "origin": "https://glados.cloud",
-    "referer": "https://glados.cloud/console/checkin",
+    "origin": API_ORIGIN,
+    "referer": f"{API_ORIGIN}/console/checkin",
     "user-agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -41,7 +84,7 @@ HEADERS_BASE = {
     # 注意：使用 requests 的 json= 参数时会自动设置 Content-Type: application/json，
     # 此处无需（也不应）手动设置 content-type，否则与 requests 默认行为重复。
 }
-PAYLOAD = {"token": "glados.cloud"}
+PAYLOAD = {"token": "glados.rocks"}
 TIMEOUT = (5, 15)  # (连接超时, 读取超时)
 MAX_RETRY = 3
 RETRY_MIN_WAIT = 2.0
@@ -169,15 +212,20 @@ def parse_earned_points(message: str) -> int:
 
 
 def validate_cookie(cookie: str) -> Tuple[bool, str]:
-    """验证 Cookie 是否包含必要字段（按 ; 拆分 key 精确校验，避免子串误判）"""
+    """验证 Cookie 是否包含当前站点的会话字段。
+
+    GLaDOS 已将会话 Cookie 前缀从 ``koa`` 改为 ``gld``；保留旧前缀兼容
+    尚未更新的账号 Cookie。
+    """
     if not cookie or not cookie.strip():
         return False, "Cookie 为空"
     cookie = cookie.strip()
     keys = {part.split("=", 1)[0].strip() for part in cookie.split(";") if part.strip()}
-    if "koa:sess" not in keys:
-        return False, "Cookie 缺少必要字段: koa:sess"
-    if "koa:sess.sig" not in keys:
-        return False, "Cookie 缺少必要字段: koa:sess.sig"
+    prefix = "gld" if "gld:sess" in keys or "gld:sess.sig" in keys else "koa"
+    if f"{prefix}:sess" not in keys:
+        return False, f"Cookie 缺少必要字段: {prefix}:sess"
+    if f"{prefix}:sess.sig" not in keys:
+        return False, f"Cookie 缺少必要字段: {prefix}:sess.sig"
     return True, ""
 
 
@@ -226,6 +274,66 @@ def retry_on_failure(max_retries: int = MAX_RETRY, min_wait: float = RETRY_MIN_W
 
 
 # ==================== 推送函数 ====================
+def render_push_html(title: str, content: str) -> str:
+    """生成兼容 PushPlus 各类客户端的表格化 HTML 报告。"""
+    rows = []
+    success_count = repeat_count = fail_count = 0
+    for line in content.splitlines():
+        fields = [part.strip() for part in line.split("|")]
+        if not fields:
+            continue
+        if len(fields) > 5:
+            fields = fields[:4] + [" | ".join(fields[4:])]
+        fields.extend([""] * (5 - len(fields)))
+        raw_status = fields[1]
+        if "成功" in raw_status:
+            success_count += 1
+            status_bg, status_fg = "#dcfce7", "#166534"
+        elif "已签到" in raw_status:
+            repeat_count += 1
+            status_bg, status_fg = "#dbeafe", "#1d4ed8"
+        else:
+            fail_count += 1
+            status_bg, status_fg = "#fee2e2", "#b91c1c"
+        fields = [escape(field) for field in fields]
+        fields[1] = (f'<span style="display:inline-block;padding:4px 9px;border-radius:999px;'
+                     f'background:{status_bg};color:{status_fg};font-size:12px;font-weight:bold;">'
+                     f'{fields[1]}</span>')
+        def value_without_label(value: str, label: str) -> str:
+            prefix = f"{label}:"
+            return value[len(prefix):].strip() if value.startswith(prefix) else value
+
+        rows.append(
+            '<div style="margin:0 0 14px;padding:16px 18px;background:#ffffff;border-left:4px solid #4f8edc;">'
+            f'<div style="font-size:16px;font-weight:bold;color:#172033;overflow-wrap:anywhere;">{fields[0]}</div>'
+            f'<div style="margin-top:10px;">{fields[1]}</div>'
+            f'<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e8edf3;font-size:13px;color:#657487;">总积分 <strong style="color:#1f3349;font-size:15px;">{value_without_label(fields[2], "总积分")}</strong></div>'
+            f'<div style="margin-top:9px;font-size:13px;color:#657487;">剩余天数 <strong style="color:#1f3349;font-size:15px;">{value_without_label(fields[3], "剩余")}</strong></div>'
+            f'<div style="margin-top:9px;font-size:13px;color:#657487;overflow-wrap:anywhere;">积分兑换 <strong style="color:#1f3349;font-size:14px;font-weight:normal;">{value_without_label(fields[4], "兑换")}</strong></div>'
+            '</div>'
+        )
+    body = "".join(rows) or '<div style="padding:20px;text-align:center;color:#64748b;">暂无签到结果</div>'
+    return (
+        '<div style="margin:0;padding:12px;background:#f1f5f9;font-family:Arial,Microsoft YaHei,sans-serif;color:#1e293b;">'
+        '<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:760px;margin:0 auto;background:#ffffff;">'
+        '<tr><td style="padding:22px 22px 20px;background:#214d78;color:#ffffff;">'
+        '<div style="font-size:11px;letter-spacing:2px;color:#c7def2;">GLADOS · DAILY REPORT</div>'
+        f'<div style="margin-top:8px;font-size:21px;line-height:1.35;font-weight:bold;overflow-wrap:anywhere;">{escape(title)}</div>'
+        '<div style="margin-top:7px;font-size:12px;color:#d8eafb;">今日账号运行摘要</div></td></tr>'
+        f'<tr><td style="padding:18px 20px 8px;">'
+        f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>'
+        f'<td style="padding:13px 10px;border-bottom:3px solid #71c596;"><b style="font-size:22px;color:#177245;">{success_count}</b><br><span style="font-size:11px;color:#607d6c;">签到成功</span></td>'
+        f'<td style="padding:13px 10px;border-bottom:3px solid #72a4dc;"><b style="font-size:22px;color:#2563b8;">{repeat_count}</b><br><span style="font-size:11px;color:#607394;">今日已签到</span></td>'
+        f'<td style="padding:13px 10px;border-bottom:3px solid #dd8585;"><b style="font-size:22px;color:#c43d3d;">{fail_count}</b><br><span style="font-size:11px;color:#956464;">需要关注</span></td>'
+        '</tr></table></td></tr>'
+        '<tr><td style="padding:8px 20px 8px;">'
+        '<div style="margin-bottom:10px;color:#475569;font-size:13px;font-weight:bold;">账号明细</div>'
+        f'{body}</td></tr>'
+        '<tr><td style="padding:15px 22px;background:#f8fafc;color:#7b8a9b;font-size:11px;text-align:center;">GLaDOS 自动签到 · 仅供账号所有者查看</td></tr>'
+        '</table></div>'
+    )
+
+
 def _push_request(
     name: str,
     url: str,
@@ -264,48 +372,6 @@ def _push_request(
         return False
 
 
-def push_deer(key: str, title: str, content: str) -> bool:
-    """PushDeer 推送"""
-    if not key:
-        return False
-    return _push_request(
-        "PushDeer",
-        "https://api2.pushdeer.com/message/push",
-        json_payload={"pushkey": key, "text": f"{title}\n\n{content}", "type": "text"},
-        success_check=lambda resp, r: r.ok and resp.get("code") == 0,
-        fail_msg_keys=("message",),
-    )
-
-
-def push_serverchan(key: str, title: str, content: str) -> bool:
-    """Server酱推送"""
-    if not key:
-        return False
-    return _push_request(
-        "Server酱",
-        f"https://sctapi.ftqq.com/{key}.send",
-        data_payload={"title": title, "desp": content},
-        success_check=lambda resp, r: r.ok and resp.get("code") == 0,
-        fail_msg_keys=("message",),
-    )
-
-
-def push_telegram(bot_token: str, chat_id: str, title: str, content: str) -> bool:
-    """Telegram Bot 推送"""
-    if not bot_token or not chat_id:
-        return False
-    text = f"{title}\n\n{content}"
-    if len(text) > TELEGRAM_MAX_LENGTH:
-        text = text[:TELEGRAM_TRUNCATE_LENGTH] + "\n..."
-    return _push_request(
-        "Telegram",
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        json_payload={"chat_id": chat_id, "text": text},
-        success_check=lambda resp, r: r.ok and resp.get("ok"),
-        fail_msg_keys=("description",),
-    )
-
-
 def push_pushplus(token: str, title: str, content: str) -> bool:
     """PushPlus 推送"""
     if not token:
@@ -313,153 +379,18 @@ def push_pushplus(token: str, title: str, content: str) -> bool:
     return _push_request(
         "PushPlus",
         "https://www.pushplus.plus/send",
-        json_payload={"token": token, "title": title, "content": content, "template": "html"},
+        json_payload={"token": token, "title": title, "content": render_push_html(title, content), "template": "html"},
         success_check=lambda resp, r: r.ok and resp.get("code") == 200,
         fail_msg_keys=("msg",),
     )
 
 
-def push_dingtalk(webhook_url: str, title: str, content: str) -> bool:
-    """钉钉机器人推送（支持加签）"""
-    if not webhook_url:
-        return False
-    secret = os.getenv("DINGTALK_SECRET", "")
-    if secret:
-        timestamp = str(round(time.time() * 1000))
-        string_to_sign = f"{timestamp}\n{secret}"
-        hmac_code = hmac.new(
-            secret.encode("utf-8"),
-            string_to_sign.encode("utf-8"),
-            digestmod=hashlib.sha256,
-        ).digest()
-        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
-        separator = "&" if "?" in webhook_url else "?"
-        webhook_url = f"{webhook_url}{separator}timestamp={timestamp}&sign={sign}"
-    else:
-        # L6：webhook 已配置但 secret 缺失，加签机器人将鉴权失败，给出明确告警
-        logger.warning(
-            "DINGTALK_WEBHOOK 已配置，但 DINGTALK_SECRET 缺失："
-            "将发送无签名请求（若机器人启用了加签校验会失败）"
-        )
-
-    return _push_request(
-        "钉钉机器人",
-        webhook_url,
-        json_payload={
-            "msgtype": "markdown",
-            "markdown": {"title": _escape_markdown(title), "text": f"### {_escape_markdown(title)}\n\n{_escape_markdown(content)}"},
-        },
-        headers={"Content-Type": "application/json"},
-        success_check=lambda resp, r: r.ok and resp.get("errcode") == 0,
-        fail_msg_keys=("errmsg",),
-    )
-
-
-def push_feishu(webhook_url: str, title: str, content: str) -> bool:
-    """飞书机器人推送（支持加签）"""
-    if not webhook_url:
-        return False
-    data: Dict[str, Any] = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {"tag": "plain_text", "content": _escape_markdown(title)},
-                "template": "blue",
-            },
-            "elements": [{"tag": "markdown", "content": _escape_markdown(content)}],
-        },
-    }
-
-    secret = os.getenv("FEISHU_SECRET", "")
-    if secret:
-        timestamp = str(round(time.time()))
-        string_to_sign = f"{timestamp}\n{secret}"
-        # 飞书签名：以 string_to_sign 为 key，空字符串为 message
-        hmac_code = hmac.new(
-            string_to_sign.encode("utf-8"),
-            b"",
-            digestmod=hashlib.sha256,
-        ).digest()
-        sign = base64.b64encode(hmac_code).decode("utf-8")
-        data["timestamp"] = timestamp
-        data["sign"] = sign
-    else:
-        # L6：webhook 已配置但 secret 缺失，加签机器人将鉴权失败，给出明确告警
-        logger.warning(
-            "FEISHU_WEBHOOK 已配置，但 FEISHU_SECRET 缺失："
-            "将发送无签名请求（若机器人启用了加签校验会失败）"
-        )
-
-    return _push_request(
-        "飞书机器人",
-        webhook_url,
-        json_payload=data,
-        headers={"Content-Type": "application/json"},
-        success_check=lambda resp, r: r.ok and resp.get("code") == 0,
-        fail_msg_keys=("msg",),
-    )
-
-
-def push_wecom_bot(webhook_url: str, title: str, content: str) -> bool:
-    """企业微信机器人推送"""
-    if not webhook_url:
-        return False
-    return _push_request(
-        "企业微信机器人",
-        webhook_url,
-        json_payload={
-            "msgtype": "markdown",
-            "markdown": {"content": f"### {_escape_markdown(title)}\n\n{_escape_markdown(content)}"},
-        },
-        headers={"Content-Type": "application/json"},
-        success_check=lambda resp, r: r.ok and resp.get("errcode") == 0,
-        fail_msg_keys=("errmsg",),
-    )
-
-
-def push_yunhu(token: str, recv_id: str, title: str, content: str) -> bool:
-    """云湖机器人推送"""
-    if not token or not recv_id:
-        return False
-    recv_type = os.getenv("YUNHU_RECV_TYPE", "group")
-    if recv_type not in ("group", "private"):
-        logger.warning("YUNHU_RECV_TYPE 值 '%s' 非法，应为 'group' 或 'private'，使用默认值 'group'", recv_type)
-        recv_type = "group"
-    return _push_request(
-        "云湖机器人",
-        "https://chat-go.jwzhd.com/open-apis/v1/bot/send-message",
-        json_payload={
-            "token": token,
-            "recvId": recv_id,
-            "recvType": recv_type,
-            "contentType": 1,
-            "content": f"**{title}**\n\n{content}",
-        },
-        headers={"Content-Type": "application/json"},
-        success_check=lambda resp, r: r.ok and resp.get("code") == 1,
-        fail_msg_keys=("msg", "message"),
-    )
-
 
 # ==================== 推送渠道配置（L3：数据驱动，便于扩展/维护） ====================
 # 每个条目: (渠道名, 触发所需的 env 变量列表, 推送调用闭包)
 PUSH_CHANNELS: List[Tuple[str, List[str], Callable[[str, str], bool]]] = [
-    ("PushDeer", ["SENDKEY"],
-     lambda t, c: push_deer(os.getenv("SENDKEY", ""), t, c)),
-    ("Server酱", ["SERVERCHAN_KEY"],
-     lambda t, c: push_serverchan(os.getenv("SERVERCHAN_KEY", ""), t, c)),
-    ("Telegram", ["TG_BOT_TOKEN", "TG_CHAT_ID"],
-     lambda t, c: push_telegram(os.getenv("TG_BOT_TOKEN", ""), os.getenv("TG_CHAT_ID", ""), t, c)),
     ("PushPlus", ["PUSHPLUS_TOKEN"],
      lambda t, c: push_pushplus(os.getenv("PUSHPLUS_TOKEN", ""), t, c)),
-    ("钉钉机器人", ["DINGTALK_WEBHOOK"],
-     lambda t, c: push_dingtalk(os.getenv("DINGTALK_WEBHOOK", ""), t, c)),
-    ("飞书机器人", ["FEISHU_WEBHOOK"],
-     lambda t, c: push_feishu(os.getenv("FEISHU_WEBHOOK", ""), t, c)),
-    ("企业微信机器人", ["WECOM_BOT_WEBHOOK"],
-     lambda t, c: push_wecom_bot(os.getenv("WECOM_BOT_WEBHOOK", ""), t, c)),
-    ("云湖机器人", ["YUNHU_TOKEN", "YUNHU_RECV_ID"],
-     lambda t, c: push_yunhu(os.getenv("YUNHU_TOKEN", ""), os.getenv("YUNHU_RECV_ID", ""), t, c)),
 ]
 
 
