@@ -49,7 +49,7 @@
 
 示例：
 ```
-koa:sess=xxxxxx; koa:sess.sig=yyyyyy
+gld:sess=xxxxxx; gld:sess.sig=yyyyyy
 ```
 
 ⚠️ **必须是完整的一整段**
