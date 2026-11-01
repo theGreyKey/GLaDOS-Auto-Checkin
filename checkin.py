@@ -212,20 +212,18 @@ def parse_earned_points(message: str) -> int:
 
 
 def validate_cookie(cookie: str) -> Tuple[bool, str]:
-    """验证 Cookie 是否包含当前站点的会话字段。
-
-    GLaDOS 已将会话 Cookie 前缀从 ``koa`` 改为 ``gld``；保留旧前缀兼容
-    尚未更新的账号 Cookie。
-    """
+    """仅校验 Cookie 请求头格式，不限制字段名、数量或签名配对。"""
     if not cookie or not cookie.strip():
         return False, "Cookie 为空"
-    cookie = cookie.strip()
-    keys = {part.split("=", 1)[0].strip() for part in cookie.split(";") if part.strip()}
-    prefix = "gld" if "gld:sess" in keys or "gld:sess.sig" in keys else "koa"
-    if f"{prefix}:sess" not in keys:
-        return False, f"Cookie 缺少必要字段: {prefix}:sess"
-    if f"{prefix}:sess.sig" not in keys:
-        return False, f"Cookie 缺少必要字段: {prefix}:sess.sig"
+    if any(ord(char) < 32 or ord(char) == 127 for char in cookie):
+        return False, "Cookie 包含控制字符"
+    fields = [part.strip() for part in cookie.split(";") if part.strip()]
+    if not fields:
+        return False, "Cookie 为空"
+    for part in fields:
+        key, separator, _ = part.partition("=")
+        if not separator or not key or re.search(r"[\s,]", key):
+            return False, "Cookie 格式应为 name=value; name2=value2"
     return True, ""
 
 
